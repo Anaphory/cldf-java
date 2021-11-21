@@ -53,6 +53,7 @@ public class CLDFImport {
 
     static Set<String> languages;
     static Set<String> concepts;
+    static Map<String, Integer> originalFormIDs;
     static List<String[]> exceptions;
 
     /**
@@ -66,7 +67,7 @@ public class CLDFImport {
      * @throws IOException
      */
     @Deprecated
-    public static CLDFWordlistDatabase<String, String, String> loadDatabase(String cldfDirName)
+    public static CLDFWordlistDatabase<Integer, String, String> loadDatabase(String cldfDirName)
             throws IOException, CLDFParseError {
         File path = new File(cldfDirName);
         // possible json files in the given folder
@@ -91,12 +92,13 @@ public class CLDFImport {
      * @throws CLDFParseError
      * @throws IOException
      */
-    public static CLDFWordlistDatabase<String, String, String> loadDatabaseMetadata(File json)
+    public static CLDFWordlistDatabase<Integer, String, String> loadDatabaseMetadata(File json)
             throws IOException, CLDFParseError {
         // TODO: Using global variables as temporary storage isn't beautiful.
         exceptions = new ArrayList<>();
         languages = new HashSet<>();
         concepts = new HashSet<>();
+        originalFormIDs = new HashMap<>();
 
         URL context = json.toURI().toURL();
         byte[] mapData = Files.readAllBytes(Paths.get(json.getAbsolutePath()));
@@ -128,7 +130,7 @@ public class CLDFImport {
         // Retrieve all values we understand from the tables we care about
 
         // FormTable
-        Map<String, CLDFForm<String>> idToForm;
+        Map<Integer, CLDFForm<Integer>> idToForm;
         JsonNode formTable = tableTypes.get("FormTable");
         if (formTable != null) {
             URL url = new URL(context, formTable.get("url").asText());
@@ -173,7 +175,7 @@ public class CLDFImport {
         }
 
         // CognateTable, containing judgements
-        Map<String, CLDFCognateJudgement<String, String, String>> cognateIDToCognate = new HashMap<>();
+        Map<String, CLDFCognateJudgement<Integer, String, String>> cognateIDToCognate = new HashMap<>();
         JsonNode cognateTable = tableTypes.get("CognateTable");
         if (cognateTable != null) {
             URL url = new URL(context, cognateTable.get("url").asText());
@@ -206,7 +208,7 @@ public class CLDFImport {
         // could be useful in Etinen, if we understand the CLDF specs for it and find an
         // example to test with.
 
-        CLDFWordlistDatabase<String, String, String> database = new CLDFWordlistDatabase<String, String, String>(
+        CLDFWordlistDatabase<Integer, String, String> database = new CLDFWordlistDatabase<Integer, String, String>(
                 idToForm, langIDToLang, paramIDToParam, cognateIDToCognate, cogSetIDToCogset);
         database.currentPath = json.getParent();
 
@@ -285,19 +287,23 @@ public class CLDFImport {
     /**
      * Load a FormTable into CLDFForm objects.
      * 
+     * Use consecutive integers as IDs. The original ids of forms will be stored in
+     * a temporary mapping.
+     * 
      * @param stream
      * @param table  The JSON entry describing the table (has key "tableSchema", and
      *               maybe others.)
-     * @return a mapping of Form IDs (assumed to be strings) to CLDFForms
+     * @return a mapping of INTEGERS (not Form IDs!) to CLDFForms
      * @throws IOException
      */
-    public static Map<String, CLDFForm<String>> readFormCsv(InputStream stream, JsonNode table) throws IOException {
-        Map<String, CLDFForm<String>> formTable = new HashMap<>();
+    public static Map<Integer, CLDFForm<Integer>> readFormCsv(InputStream stream, JsonNode table) throws IOException {
+        Map<Integer, CLDFForm<Integer>> formTable = new HashMap<>();
+        int i = -1;
         for (Map<String, PString> row : readTable(stream, table)) {
+            originalFormIDs.put(row.remove("id").toString(), ++i);
 
-            CLDFForm<String> formEntry = new CLDFForm<String>(row.remove("id").toString(),
-                    row.remove("languageReference").toString(), row.remove("parameterReference").toStringList(),
-                    row.remove("form").toString());
+            CLDFForm<Integer> formEntry = new CLDFForm<Integer>(i, row.remove("languageReference").toString(),
+                    row.remove("parameterReference").toStringList(), row.remove("form").toString());
 
             // settings fields that aren't required by checking whether they exist
             try {
@@ -321,7 +327,7 @@ public class CLDFImport {
             // for the remaining columns, put them into a property map
             formEntry.setProperties(row);
             // mapping object and its id
-            formTable.put(formEntry.getId(), formEntry);
+            formTable.put(i, formEntry);
 
             languages.add(formEntry.getLangID());
             concepts.addAll(formEntry.getParamID());
@@ -447,13 +453,14 @@ public class CLDFImport {
      *         CLDFCognateJudgement objects
      * @throws IOException
      */
-    public static Map<String, CLDFCognateJudgement<String, String, String>> readCognateCsv(InputStream stream,
+    public static Map<String, CLDFCognateJudgement<Integer, String, String>> readCognateCsv(InputStream stream,
             JsonNode table) throws IOException {
-        Map<String, CLDFCognateJudgement<String, String, String>> cognateTable = new HashMap<>();
+        Map<String, CLDFCognateJudgement<Integer, String, String>> cognateTable = new HashMap<>();
         for (Map<String, PString> row : readTable(stream, table)) {
 
-            CLDFCognateJudgement<String, String, String> judgement = new CLDFCognateJudgement<String, String, String>(
-                    row.remove("id").toString(), row.remove("formReference").toString(),
+            CLDFCognateJudgement<Integer, String, String> judgement = new CLDFCognateJudgement<Integer, String, String>(
+                    row.remove("id").toString(),
+                    originalFormIDs.get(row.remove("formReference").toString()),
                     row.remove("cognatesetReference").toString());
 
             // for the remaining columns, put them into a property map
@@ -470,8 +477,8 @@ public class CLDFImport {
      * @param stream
      * @param table  The JSON entry describing the table (has key "tableSchema", and
      *               maybe others.)
-     * @return A mapping of Cognateset IDs (assumed to be strings) to
-     *         CLDFCognateSet objects
+     * @return A mapping of Cognateset IDs (assumed to be strings) to CLDFCognateSet
+     *         objects
      * @throws IOException
      */
     public static Map<String, CLDFCognateSet<String>> readCognatesetCsv(InputStream stream, JsonNode table)

@@ -6,6 +6,8 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 
@@ -22,8 +24,9 @@ class TestFormTableReader {
         CLDFImport.exceptions = new ArrayList<>();
         CLDFImport.languages = new HashSet<>();
         CLDFImport.concepts = new HashSet<>();
+        CLDFImport.originalFormIDs = new HashMap<>();
 
-        Map<String, CLDFForm<String>> result = CLDFImport.readFormCsv(new ByteArrayInputStream("""
+        Map<Integer, CLDFForm<Integer>> result = CLDFImport.readFormCsv(new ByteArrayInputStream("""
                 ID,Language_ID,Parameter_ID,Form
                 1,fra,one,un""".getBytes()), new ObjectMapper().readTree("""
                 {"tableSchema": {"columns": [
@@ -33,10 +36,14 @@ class TestFormTableReader {
                 {"name": "Form", "propertyUrl": "form"}
                 ]}}"""));
 
+        assertEquals(1, CLDFImport.originalFormIDs.size());
+        assertEquals(
+                Collections.singletonMap("1", 0),
+                CLDFImport.originalFormIDs);
         assertEquals(1, result.size());
-        assertEquals("1", result.get("1").getId());
-        assertEquals("un", result.get("1").getForm());
-        assertEquals("fra", result.get("1").getLangID());
-        assertEquals(Arrays.asList(new String[] { "one" }), result.get("1").getParamID());
+        assertEquals(0, result.get(0).getId());
+        assertEquals("un", result.get(0).getForm());
+        assertEquals("fra", result.get(0).getLangID());
+        assertEquals(Arrays.asList(new String[] { "one" }), result.get(0).getParamID());
     }
 }
