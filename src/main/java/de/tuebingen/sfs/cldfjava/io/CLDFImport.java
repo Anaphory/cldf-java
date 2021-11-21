@@ -9,512 +9,440 @@ import de.tuebingen.sfs.cldfjava.data.CLDFLanguage;
 import de.tuebingen.sfs.cldfjava.data.CLDFParameter;
 import de.tuebingen.sfs.cldfjava.data.CLDFWordlistDatabase;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-
+import java.util.Set;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVRecord;
 
 public class CLDFImport {
-    public static CSVParser parser;
-    public static CLDFWordlistDatabase database;
-    private static Map<String, Integer> formsOldToNew;
-    private static Map<Integer, String> formsNewToOld;
-    private static Map<String, Integer> cognateIdMap;
-    private static List<String[]> exceptions;
+
+    interface CellReader {
+        abstract PString translate(CSVRecord r);
+    }
+
+    static Set<String> languages;
+    static Set<String> concepts;
+    static List<String[]> exceptions;
 
     /**
-     * TODO: This should build a CLDFDatabase object (see structure and interface there) from a directory with CLDF files.
-     * The module we want to fully support is described here: https://github.com/cldf/cldf/tree/master/modules/Wordlist
-     * Test cases are src/test/resources/lexirumah-2.0 and src/test/resources/northeuralex-0.9.
-     * We should first read the metadata JSON file, and adapt the parser for the other files to the CSV dialect description (see https://github.com/cldf/cldf)
-     * The functionality of importAtomsFromFile (and retrieveAtoms) should then be moved to LexicalAtomExtractor (see there)
+     * TODO: This should build a CLDFDatabase object (see structure and interface
+     * there) from a directory with CLDF files. The module we want to fully support
+     * is described here: https://github.com/cldf/cldf/tree/master/modules/Wordlist
+     * Test cases are src/test/resources/lexirumah-2.0 and
+     * src/test/resources/northeuralex-0.9. We should first read the metadata JSON
+     * file, and adapt the parser for the other files to the CSV dialect description
+     * (see https://github.com/cldf/cldf) The functionality of importAtomsFromFile
+     * (and retrieveAtoms) should then be moved to LexicalAtomExtractor (see there)
      *
      * @param cldfDirName
      * @return
+     * @throws CLDFParseError
+     * @throws IOException
      */
-    public static CLDFWordlistDatabase loadDatabase(String cldfDirName) {
-        File path;
-        File[] possibleJsons;
+    public static CLDFWordlistDatabase<String, String, String> loadDatabase(String cldfDirName)
+            throws IOException, CLDFParseError {
+        File path = new File(cldfDirName);
+        // possible json files in the given folder
+        File[] possibleJsons = path.listFiles((File dir, String name) -> name.endsWith("metadata.json"));
+
         File json;
-        byte[] mapData;
-        parser = new CSVParser();
-        formsOldToNew = new HashMap<>();
-        cognateIdMap = new HashMap<>();
-        formsNewToOld = new HashMap<>();
+        if (possibleJsons.length == 0) { // if 0, no json found in the folder
+            throw new Error("folder");
+        } else {
+            // Filter for a Wordlist module
+            json = possibleJsons[0];
+        }
+
+        return loadDatabaseMetadata(json);
+    }
+
+    public static CLDFWordlistDatabase<String, String, String> loadDatabaseMetadata(File json)
+            throws IOException, CLDFParseError {
         exceptions = new ArrayList<>();
+        languages = new HashSet<>();
+        concepts = new HashSet<>();
 
-        try {
-            path = new File(cldfDirName);
-            possibleJsons = path.listFiles((File dir, String name) -> name.endsWith("metadata.json")); //possible json files in the given folder
-            if (possibleJsons.length == 0) { //if 0, no json found in the folder
-                throw new Error("folder");
-            } else {
-                json = possibleJsons[0];
-            }
-            mapData = Files.readAllBytes(Paths.get(json.getAbsolutePath()));
-            JsonNode root = new ObjectMapper().readTree(mapData);
-            String moduleType = root.get("dc:conformsTo").asText().split("#")[1]; // extracting the module from the link
+        URL context = json.toURI().toURL();
+        byte[] mapData = Files.readAllBytes(Paths.get(json.getAbsolutePath()));
+        JsonNode root = new ObjectMapper().readTree(mapData);
+        String moduleType = root.get("dc:conformsTo").asText().split("#")[1]; // extracting the module from the link
 
-            if (moduleType.equals("Wordlist")) { //extracting the Wordlist module
-                JsonNode tables = root.get("tables"); //extracting all tables of the module
-                List<String> tableTypes = new ArrayList<>();
-
-                for (JsonNode table : tables) {
-                    String tableType = table.get("dc:conformsTo").asText().split("#")[1]; //each table must conform to a type, which is added into the list
-                    tableTypes.add(tableType);
-                }
-
-                //index of a type of table in the list is the one we that we will refer to retrieve all values relevant for the specific table
-                int formTableIndex = tableTypes.indexOf("FormTable");
-                int languageTableIndex = tableTypes.indexOf("LanguageTable");
-                int parameterTableIndex = tableTypes.indexOf("ParameterTable");
-                int cognateTableIndex = tableTypes.indexOf("CognateTable");
-                int cognateSetTableIndex = tableTypes.indexOf("CognatesetTable");
-
-                //getting names of the files that stores tables
-                String formFileName = tables.get(formTableIndex).get("url").asText();
-                String languageFileName = tables.get(languageTableIndex).get("url").asText();
-                String parameterFileName = tables.get(parameterTableIndex).get("url").asText();
-
-                //populating form, language and parameters maps (all have different methods because of different properties and object fields)
-                Map<Integer, CLDFForm> idToForm = readFormCsv(path + "/" + formFileName, createColumnPropertyMap(formTableIndex, tables));
-                Map<String, CLDFLanguage> langIDToLang = readLanguageCsv(path + "/" + languageFileName, createColumnPropertyMap(languageTableIndex, tables));
-                Map<String, CLDFParameter> paramIDToParam = readParameterCsv(path + "/" + parameterFileName, createColumnPropertyMap(parameterTableIndex, tables));
-                Map<Integer, CLDFCognateJudgement> cognateIDToCognate = new HashMap<>();
-                if (cognateTableIndex != -1) {
-                    String cognateFileName = tables.get(cognateTableIndex).get("url").asText();
-                    cognateIDToCognate = readCognateCsv(path + "/" + cognateFileName, createColumnPropertyMap(cognateTableIndex, tables));
-                }
-                //populating Cognateset map only happens if there is a separate file for that
-                Map<String, CLDFCognateSet> cogSetIDToCogset = new HashMap<>();
-                if (cognateSetTableIndex != -1) {
-                    String cognateSetFileName = tables.get(cognateSetTableIndex).get("url").asText();
-                    cogSetIDToCogset = readCognateSetCsv(path + "/" + cognateSetFileName, createColumnPropertyMap(cognateSetTableIndex, tables));
-                }
-                formsOldToNew.clear();
-                database = new CLDFWordlistDatabase(idToForm, langIDToLang, paramIDToParam, cognateIDToCognate, cogSetIDToCogset, formsNewToOld);
-                database.currentPath = cldfDirName;
-
-            } else {
-                throw new Error("wordlist");
-            }
-        } catch (Error e) {
-            exceptions.add(new String[]{e.getMessage(), cldfDirName});
-        } catch (NullPointerException | IOException e) {
-            exceptions.add(new String[]{"else"});
-            e.printStackTrace();
+        if (!moduleType.equals("Wordlist")) {
+            throw new CLDFParseError("Expected Wordlist, found " + root.get("dc:conformsTo").asText());
         }
-        if (database == null) {
-            database = new CLDFWordlistDatabase();
+
+        // extracting the Wordlist module
+        JsonNode tables = root.get("tables"); // extracting all tables of the module
+        Map<String, JsonNode> tableTypes = new HashMap<>();
+
+        for (JsonNode table : tables) {
+            String tableType;
+            if (table.get("dc:conformsTo") == null)
+                tableType = null; // No table type given, who knows what kind of table that is.
+            else {
+                try {
+                    // TODO: Check that the bit before the '#' points to the CLDF spec.
+                    tableType = table.get("dc:conformsTo").asText().split("#")[1];
+                } catch (IndexOutOfBoundsException e) {
+                    // No CLDF table type given, but maybe still useful.
+                    tableType = table.get("dc:conformsTo").asText();
+                }
+            }
+            tableTypes.put(tableType, table);
         }
+
+        // index of a type of table in the list is the one we that we will refer to
+        // retrieve all values we understand for the tables we care about
+
+        // FormTable
+        Map<String, CLDFForm<String>> idToForm;
+        JsonNode formTable = tableTypes.get("FormTable");
+        if (formTable != null) {
+            URL url = new URL(context, formTable.get("url").asText());
+            InputStream table = url.openConnection().getInputStream();
+            idToForm = readFormCsv(table, formTable);
+        } else {
+            throw new CLDFParseError("Wordlist had no FormTable.");
+        }
+
+        // LanguageTable
+        Map<String, CLDFLanguage> langIDToLang = new HashMap<>();
+        JsonNode languageTable = tableTypes.get("LanguageTable");
+        if (languageTable != null) {
+            URL url = new URL(context, languageTable.get("url").asText());
+            InputStream table = url.openConnection().getInputStream();
+            langIDToLang = readLanguageCsv(table, languageTable);
+        } else {
+            // Sigh, all we know about language IDs are the entries in the FormTable's
+            // languageReference. Turn those into minimal CLDFLanguage objects.
+            // OR INSTEAD, throw an error and tell the user to create a LanguageTable with
+            // lexedata, which can also guess some Glottocodes.
+            for (String language : languages) {
+                langIDToLang.put(language, new CLDFLanguage(language));
+            }
+        }
+
+        // ParameterTable
+        Map<String, CLDFParameter> paramIDToParam = new HashMap<>();
+        JsonNode parameterTable = tableTypes.get("ParameterTable");
+        if (parameterTable != null) {
+            URL url = new URL(context, parameterTable.get("url").asText());
+            InputStream table = url.openConnection().getInputStream();
+            paramIDToParam = readParameterCsv(table, parameterTable);
+        } else {
+            // TODO: Sigh, all we know about concepts are the entries in the FormTable's
+            // parameterReference. Turn those into minimal CLDFParameter objects.
+            // OR INSTEAD, throw an error and tell the user to create a ParameterTable with
+            // lexedata, which can also guess some Concepticon connections.
+            for (String concept : concepts) {
+                paramIDToParam.put(concept, new CLDFParameter(concept));
+            }
+        }
+
+        // CognateTable, containing judgements
+        Map<String, CLDFCognateJudgement<String, String, String>> cognateIDToCognate = new HashMap<>();
+        JsonNode cognateTable = tableTypes.get("CognateTable");
+        if (cognateTable != null) {
+            URL url = new URL(context, cognateTable.get("url").asText());
+            InputStream table = url.openConnection().getInputStream();
+            cognateIDToCognate = readCognateCsv(table, cognateTable);
+        } else {
+            // populating the judgements map only happens if there is a separate file for
+            // that.
+            // If there isn't one, do nothing. In particular, do not fall back to reading
+            // cognate judgements from the FormTable, like it was common in the early days
+            // of CLDF.
+        }
+
+        // CognatesetTable
+        Map<String, CLDFCognateSet<String>> cogSetIDToCogset = new HashMap<>();
+        JsonNode cognateSetTable = tableTypes.get("CognatesetTable");
+        if (cognateSetTable != null) {
+            URL url = new URL(context, cognateSetTable.get("url").asText());
+            InputStream table = url.openConnection().getInputStream();
+            cogSetIDToCogset = readCognatesetCsv(table, cognateSetTable);
+        } else {
+            // populating Cognateset map only happens if there is a separate file for that.
+            // This is probably the table we need the least.
+        }
+
+        // BorrowingTable
+        JsonNode borrowingTableIndex = tableTypes.get("BorrowingTable");
+        // We are not actually using this table yet, but know ye that it exists! And it
+        // could be useful in Etinen, if we understand the CLDF specs for it and find an
+        // example to test with.
+
+        CLDFWordlistDatabase<String, String, String> database = new CLDFWordlistDatabase<String, String, String>(
+                idToForm, langIDToLang, paramIDToParam, cognateIDToCognate, cogSetIDToCogset);
+        database.currentPath = json.getParent();
+
         database.setExceptions(exceptions);
         return database;
     }
 
-    /**
-     * A method to create the map from column names to their types
-     *
-     * @param tableIndex: an index of a table to retrieve values form
-     * @param tables:     nodes of a table
-     * @return: map(property, column name)
-     */
-    public static Map<String, String> createColumnPropertyMap(int tableIndex, JsonNode tables) {
-        //columns might have different names, therefore we need a mapping from column name to its type
-        Map<String, String> propertyToColumn = new HashMap<>();
-        for (JsonNode column : tables.get(tableIndex).get("tableSchema").get("columns")) {
-            //if no type is given, name of the column is considered the type
-            String property = column.get("propertyUrl") == null || !column.get("propertyUrl").asText().contains("#") ? column.get("name").asText() : column.get("propertyUrl").asText().split("#")[1];
-            String columnName = column.get("name").asText();
-
-            propertyToColumn.put(property, columnName);
-
+    public static List<Map<String, PString>> readTable(InputStream stream, JsonNode table) throws IOException {
+        CSVFormat dialect = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build();
+        if (table.get("dialect") != null) {
+            // TODO: understand the table dialect, and adjust the format description
+            // accordingly
         }
-        return propertyToColumn;
-    }
+        CSVParser parser = CSVParser.parse(stream, StandardCharsets.UTF_8, dialect);
 
-    /**
-     * A method for reading the Parameter Table
-     *
-     * @param path            of the file to read
-     * @param propertyColumns a map of properties and their columns
-     * @return id to Parameter object map
-     */
-    public static Map<String, CLDFParameter> readParameterCsv(String path, Map<String, String> propertyColumns) {
-        BufferedReader bf = null;
-        String line = "";
-        Map<String, CLDFParameter> parameterTable = new HashMap<>();
-        try {
-            bf = new BufferedReader(new FileReader(path));
-            List<String> columns = Arrays.asList(bf.readLine().toLowerCase().split(","));  //all columns are split by comma
-
-            //retrieving column indecies of each property, that will help us extract values and fill Object fields.
-            //-1 needed when the field is not required, and therefore won't be extracted if not found
-            int idIdx = columns.indexOf(propertyColumns.get("id").toLowerCase());
-            int nameIdx = propertyColumns.containsKey("name") ? columns.indexOf(propertyColumns.get("name").toLowerCase()) : -1;
-            int concIdx = propertyColumns.containsKey("concepticonReference") ? columns.indexOf(propertyColumns.get("concepticonReference").toLowerCase()) : -1;
-            int semField = columns.contains("semantic_field") ? columns.indexOf("semantic_field") : -1;
-            int concepiconIdx = -1;
-            if (columns.contains("concepticon_proposed")) {
-                concepiconIdx = columns.indexOf("concepticon_proposed");
-            } else if (columns.contains("concepticon_gloss")) {
-                concepiconIdx = columns.indexOf("concepticon_gloss");
-            } else if (columns.contains("concepticon")) {
-                concepiconIdx = columns.indexOf("concepticon");
+        List<String> column_headers = parser.getHeaderNames();
+        Iterator<JsonNode> column_spec = table.get("tableSchema").get("columns").elements();
+        Map<String, CellReader> functions = new HashMap<>();
+        while (column_spec.hasNext()) {
+            JsonNode column = column_spec.next();
+            String name = column.get("name").asText();
+            Integer position = column_headers.indexOf(name);
+            String function = null;
+            try {
+                function = column.get("propertyUrl").asText();
+                function = function.split("#")[1];
+            } catch (IndexOutOfBoundsException e) {
+                // The second line got skipped. This is okay.
+            } catch (NullPointerException e) {
+                function = name;
             }
-
-            //in order to fill the "properties" map, for the columns that don't have a separate filed
-            //make a list of column indecies that were used
-            List<Integer> usedColumns = Arrays.asList(idIdx, nameIdx, concIdx, concepiconIdx, semField);
-            List<Integer> remainedColumns = new ArrayList<>();
-
-            //fill a new list with unused columns with the remaining indecies
-            for (int i = 0; i < columns.size(); i++) {
-                if (!usedColumns.contains(i)) {
-                    remainedColumns.add(i);
-                }
+            // TODO: If there's a valueUrl, it should be used as template.
+            // TODO: We could have a virtual column, which would ask for a constant fn.
+            JsonNode separator = column.get("separator");
+            if (separator == null) {
+                functions.put(function, r -> new PString(r.get(position), null));
+            } else {
+                functions.put(function, r -> new PString(r.get(position), separator.asText()));
             }
-            int i = 1;
-            while ((line = bf.readLine()) != null) {
-                //parsed column values of each row
-                String[] column = parser.getColumns(line).toArray(new String[0]);
-                CLDFParameter parameterEntry = new CLDFParameter();
-                Map<String, String> properties = new HashMap<>();
-                try {
-                    //if the amount of column names and the amount of retrieved column values are not the same, there must be some error in row formatting
-                    if (column.length != columns.size()) {
-                        throw new Exception();
-                    }
-                    //setting required fields
-                    parameterEntry.setParamID(column[idIdx]);
-
-                    //settings fields that aren't required by checking whether they exist
-                    if (nameIdx != -1) parameterEntry.setName(column[nameIdx]);
-                    if (concIdx != -1) parameterEntry.setConcepticonID(column[concIdx]);
-                    if (concepiconIdx != -1) parameterEntry.setConcepticon(column[concepiconIdx]);
-                    if (semField != -1) parameterEntry.setSemanticField(column[semField]);
-
-                    //for the indecies of remained columns, put them into a property map
-                    for (int j = 0; j < remainedColumns.size(); j++) {
-                        String colVal = column[remainedColumns.get(j)];
-                        properties.put(columns.get(remainedColumns.get(j)), colVal);
-                    }
-
-                    parameterEntry.setProperties(properties);
-                    //mapping object and its id
-                    parameterTable.put(column[idIdx], parameterEntry);
-                } catch (Exception e) {
-                    exceptions.add(new String[]{"row", path, i + "", line});
-                }
-                i++;
-            }
-            bf.close();
-
-        } catch (ArrayIndexOutOfBoundsException | IOException e) {
-            e.printStackTrace();
         }
 
-        return parameterTable;
-    }
-
-    /**
-     * A method for reading the Language Table
-     *
-     * @param path            of the file to read
-     * @param propertyColumns a map of properties and their columns
-     * @return id to Language object map
-     */
-    public static Map<String, CLDFLanguage> readLanguageCsv(String path, Map<String, String> propertyColumns) {
-        BufferedReader bf = null;
-        Map<String, CLDFLanguage> languageTable = new HashMap<>();
-        String line = "";
-
-        try {
-            bf = new BufferedReader(new FileReader(path));
-            List<String> columns = Arrays.asList(bf.readLine().split(","));  //all columns are split by comma
-
-            //retrieving column indecies of each property, that will help us extract values and fill Object fields.
-            //-1 needed when the field is not required, and therefore won't be extracted if not found
-            int idIdx = columns.indexOf(propertyColumns.get("id"));
-            int isoIdx = propertyColumns.containsKey("iso639P3code") ? columns.indexOf(propertyColumns.get("iso639P3code")) : -1;
-            int glottoIdx = propertyColumns.containsKey("glottocode") ? columns.indexOf(propertyColumns.get("glottocode")) : -1;
-            int macroaIdx = propertyColumns.containsKey("macroarea") ? columns.indexOf(propertyColumns.get("macroarea")) : -1;
-            int nameIdx = propertyColumns.containsKey("name") ? columns.indexOf(propertyColumns.get("name")) : -1;
-            int familyIdx = propertyColumns.containsKey("Family") ? columns.indexOf(propertyColumns.get("Family")) : -1;
-            int latitIdx = propertyColumns.containsKey("latitude") ? columns.indexOf(propertyColumns.get("latitude")) : -1;
-            int longitIdx = propertyColumns.containsKey("longitude") ? columns.indexOf(propertyColumns.get("longitude")) : -1;
-            if (latitIdx == -1 && columns.contains("latitude")) latitIdx = columns.indexOf("latitude");
-            if (longitIdx == -1 && columns.contains("longitude")) longitIdx = columns.indexOf("longitude");
-            //in order to fill the "properties" map, for the columns that don't have a separate filed
-            //make a list of column indecies that were used
-            List<Integer> usedColumns = Arrays.asList(idIdx, isoIdx, glottoIdx, macroaIdx, latitIdx, longitIdx, nameIdx);
-            List<Integer> remainedColumns = new ArrayList<>();
-
-            //fill a new list with unused columns with the remaining indecies
-            for (int i = 0; i < columns.size(); i++) {
-                if (!usedColumns.contains(i)) {
-                    remainedColumns.add(i);
-                }
+        List<Map<String, PString>> rows = new ArrayList<>();
+        for (CSVRecord row : parser) {
+            Map<String, PString> processed_row = new HashMap<>();
+            for (String column : functions.keySet()) {
+                processed_row.put(column, functions.get(column).translate(row));
             }
-
-            int i = 1;
-            while ((line = bf.readLine()) != null) {
-                //parsed column values of each row
-                String[] column = parser.getColumns(line).toArray(new String[0]);
-                CLDFLanguage languageEntry = new CLDFLanguage();
-                Map<String, String> properties = new HashMap<>();
-                try {
-                    //if the amount of column names and the amount of retrieved column values are not the same, there must be some error in row formatting
-                    if (column.length != columns.size()) {
-                        throw new Exception();
-                    }
-                    //setting required fields
-                    languageEntry.setLangID(column[idIdx]);
-
-                    //settings fields that aren't required by checking whether they exist
-                    if (isoIdx != -1) languageEntry.setIso(column[isoIdx]);
-                    if (glottoIdx != -1) languageEntry.setGlottocode(column[glottoIdx]);
-                    if (nameIdx != -1) languageEntry.setName(column[nameIdx]);
-                    if (familyIdx != -1) languageEntry.setFamily(column[familyIdx]);
-                    if (latitIdx != -1)
-                        languageEntry.setLatitude(column[latitIdx].isEmpty() ? Float.NaN : Float.parseFloat(column[latitIdx])); //if the value is empty, indication for a Float type
-                    if (longitIdx != -1)
-                        languageEntry.setLongitude(column[latitIdx].isEmpty() ? Float.NaN : Float.parseFloat(column[longitIdx])); //if the value is empty, indication for a Float type
-
-                    //for the indecies of remained columns, put them into a property map
-                    for (int j = 0; j < remainedColumns.size(); j++) {
-                        String colVal = column[remainedColumns.get(j)];
-                        properties.put(columns.get(remainedColumns.get(j)), colVal);
-                    }
-
-                    languageEntry.setProperties(properties);
-                    //mapping object and its id
-                    languageTable.put(column[idIdx], languageEntry);
-                } catch (Exception e) {
-                    exceptions.add(new String[]{"row", path, i + "", line});
-                }
-                i++;
-            }
-            bf.close();
-        } catch (ArrayIndexOutOfBoundsException | IOException e) {
-            e.printStackTrace();
+            rows.add(processed_row);
         }
-
-        return languageTable;
+        return rows;
     }
 
     /**
      * A method for reading the Form Table
      *
-     * @param path            of the file to read
-     * @param propertyColumns a map of properties and their columns
+     * @param path  of the file to read
+     * @param table The JSON entry describing the table (has key "tableSchema", and
+     *              maybe others.)
      * @return id to Form object map
+     * @throws IOException
      */
-    public static Map<Integer, CLDFForm> readFormCsv(String path, Map<String, String> propertyColumns) {
-        BufferedReader bf = null;
-        String line = "";
-        Map<Integer, CLDFForm> formTable = new HashMap<>();
-        int formID = 0;
-        try {
-            bf = new BufferedReader(new FileReader(path));
-            List<String> columns = Arrays.asList(bf.readLine().split(","));  //all columns are split by comma
+    public static Map<String, CLDFForm<String>> readFormCsv(InputStream stream, JsonNode table) throws IOException {
+        Map<String, CLDFForm<String>> formTable = new HashMap<>();
+        for (Map<String, PString> row : readTable(stream, table)) {
 
-            //value doesn't always have a specified property name, and is sometimes cold differently. Map possible names
-            String value = propertyColumns.containsKey("Value") ? "Value" : "value";
+            CLDFForm<String> formEntry = new CLDFForm<String>(row.remove("id").toString(),
+                    row.remove("languageReference").toString(), row.remove("parameterReference").toStringList(),
+                    row.remove("form").toString());
 
-            //retrieving column indecies of each property, that will help us extract values and fill Object fields.
-            //-1 needed when the field is not required, and therefore won't be extracted if not found
-            int idIdx = columns.indexOf(propertyColumns.get("id"));
-            int langIdx = columns.indexOf(propertyColumns.get("languageReference"));
-            int paramIdx = columns.indexOf(propertyColumns.get("parameterReference"));
-
-            int formIdx = propertyColumns.containsKey("form") ? columns.indexOf(propertyColumns.get("form")) : -1;
-            int valueIdx = propertyColumns.containsKey(value) ? columns.indexOf(propertyColumns.get(value)) : -1;
-            int commentIdx = propertyColumns.containsKey("comment") ? columns.indexOf(propertyColumns.get("comment")) : -1;
-            int segmentsIdx = propertyColumns.containsKey("segments") ? columns.indexOf(propertyColumns.get("segments")) : -1;
-            int orthoIdx = -1;
-            if (propertyColumns.containsKey("Orthography")) {
-                orthoIdx = columns.indexOf(propertyColumns.get("Orthography"));
-            } else if (propertyColumns.containsKey("Local_Orthography")) {
-                orthoIdx = columns.indexOf(propertyColumns.get("Local_Orthography"));
+            // settings fields that aren't required by checking whether they exist
+            try {
+                formEntry.setOrigValue(row.remove("value").toString());
+            } catch (NullPointerException e) {
+            }
+            try {
+                formEntry.setComment(row.remove("comment").toString());
+            } catch (NullPointerException e) {
+            }
+            try {
+                formEntry.setSegments(row.remove("segments").toStringList());
+            } catch (NullPointerException e) {
+            }
+            // TODO: Orthography is not a standard CLDF column, try more options
+            try {
+                formEntry.setOrthography(row.remove("orthographic").toString());
+            } catch (NullPointerException e) {
             }
 
-            //in order to fill the "properties" map, for the columns that don't have a separate filed
-            //make a list of column indecies that were used
-            List<Integer> usedColumns = Arrays.asList(idIdx, langIdx, paramIdx, formIdx, valueIdx, commentIdx, segmentsIdx, orthoIdx);
-            List<Integer> remainedColumns = new ArrayList<>();
+            // for the remaining columns, put them into a property map
+            formEntry.setProperties(row);
+            // mapping object and its id
+            formTable.put(formEntry.getId(), formEntry);
 
-            //fill a new list with unused columns with the remaining indecies
-            for (int i = 0; i < columns.size(); i++) {
-                if (!usedColumns.contains(i)) {
-                    remainedColumns.add(i);
-                }
-            }
-            int i = 1;
-            while ((line = bf.readLine()) != null) {
-                //parsed column values of each row
-                String[] column = parser.getColumns(line).toArray(new String[0]);
-                CLDFForm formEntry = new CLDFForm();
-                Map<String, String> properties = new HashMap<>();
-                try {
-                    //if the amount of column names and the amount of retrieved column values are not the same, there must be some error in row formatting
-                    if (column.length != columns.size()) {
-                        throw new Exception();
-                    }
-                    //setting required fields
-                    //if form id is a string, create an integer ID
-                    formsOldToNew.put(column[idIdx], formID);
-                    formsNewToOld.put(formID, column[idIdx]);
-                    formEntry.setId(formID);
-                    formEntry.setLangID(column[langIdx]);
-                    formEntry.setParamID(column[paramIdx]);
-
-                    //settings fields that aren't required by checking whether they exist
-                    if (formIdx != -1) formEntry.setForm(column[formIdx]);
-                    if (valueIdx != -1) formEntry.setOrigValue(column[valueIdx]);
-                    if (commentIdx != -1) formEntry.setComment(column[commentIdx]);
-                    if (segmentsIdx != -1) formEntry.setSegments(column[segmentsIdx].split(" "));
-                    if (orthoIdx != -1) formEntry.setOrthography(column[orthoIdx]);
-
-                    //for the indecies of remained columns, put them into a property map
-                    for (int j = 0; j < remainedColumns.size(); j++) {
-                        String colVal = column[remainedColumns.get(j)].isEmpty() ? "" : column[remainedColumns.get(j)];
-                        properties.put(columns.get(remainedColumns.get(j)), colVal);
-                    }
-
-                    formEntry.setProperties(properties);
-                    //mapping object and its id
-                    formTable.put(formID, formEntry);
-                    formID++;
-                } catch (Exception e) {
-                    exceptions.add(new String[]{"row", path, i + "", line});
-                }
-                i++;
-            }
-            bf.close();
-        } catch (ArrayIndexOutOfBoundsException | IOException e) {
-            e.printStackTrace();
+            languages.add(formEntry.getLangID());
+            concepts.addAll(formEntry.getParamID());
         }
-
         return formTable;
     }
 
+    private static String familyFromGlottocode(String glottocode) {
+        // TODO Where do we store the Glottolog tree again??
+        InputStream tree = CLDFImport.class.getResourceAsStream("/glottolog/trees.nwk");
+        return "Arawak";
+    }
+
     /**
-     * A method for reading the CoganteSet Table
+     * A method for reading the Language Table
      *
-     * @param path            of the file to read
+     * @param stream          of the file to read
      * @param propertyColumns a map of properties and their columns
-     * @return id to Cognate object map
+     * @return id to Language object map
+     * @throws IOException
      */
-    public static Map<Integer, CLDFCognateJudgement> readCognateCsv(String path, Map<String, String> propertyColumns) {
-        BufferedReader bf = null;
-        String line = "";
-        Map<Integer, CLDFCognateJudgement> cognateTable = new HashMap<>();
-        int cognateId = 0;
-        try {
-            bf = new BufferedReader(new FileReader(path));
-            List<String> columns = Arrays.asList(bf.readLine().split(",")); //all columns are split by comma
+    public static Map<String, CLDFLanguage> readLanguageCsv(InputStream stream, JsonNode table) throws IOException {
+        Map<String, CLDFLanguage> languageTable = new HashMap<>();
+        for (Map<String, PString> row : readTable(stream, table)) {
 
-            //retrieving column indecies of each property, that will help us extract values and fill Object fields. -1 needed when the field is not required, and therefore won't be extracted if not found
-            int idIdx = columns.indexOf(propertyColumns.get("id"));
-            int formIdx = columns.indexOf(propertyColumns.get("formReference"));
-            int cogsetIdx = columns.indexOf(propertyColumns.get("cognatesetReference"));
+            CLDFLanguage languageEntry = new CLDFLanguage(row.remove("id").toString());
 
-            int i = 1;
-            while ((line = bf.readLine()) != null) {
-                //parsed column values of each row
-                String[] column = parser.getColumns(line).toArray(new String[0]);
-                CLDFCognateJudgement cognateEntry = new CLDFCognateJudgement();
-                //if the amount of column names and the amount of retrieved column values are not the same, there must be some error in row formatting
-                try {
-                    if (column.length != columns.size()) {
-                        throw new Exception();
-                    }
-                    if (formsOldToNew.containsKey(column[formIdx])) {
-                        //setting required fields
-                        int currentCogset = -1;
-                        cognateIdMap.put(column[idIdx], cognateId);
-                        cognateEntry.setCognateID(cognateId);
-                        cognateEntry.setFormReference(formsOldToNew.get(column[formIdx]));
-                        cognateEntry.setCognatesetReference(column[cogsetIdx]);
-
-
-                        //mapping object and its id
-                        cognateTable.put(cognateId, cognateEntry);
-                        cognateId++;
-                    }
-                } catch (Exception e) {
-                    exceptions.add(new String[]{"row", path, i + "", line});
-                }
-                i++;
+            // settings fields that aren't required by checking whether they exist
+            try {
+                languageEntry.setIso(row.remove("iso639P3code").toString());
+            } catch (NullPointerException e) {
             }
-            bf.close();
 
-        } catch (ArrayIndexOutOfBoundsException | IOException e) {
-            e.printStackTrace();
+            try {
+                languageEntry.setGlottocode(row.remove("glottocode").toString());
+            } catch (NullPointerException e) {
+            }
+            try {
+                languageEntry.setName(row.remove("name").toString());
+            } catch (NullPointerException e) {
+            }
+            try {
+                languageEntry.setLongitude(row.remove("longitude").toFloat());
+            } catch (NullPointerException e) {
+            }
+            try {
+                languageEntry.setLatitude(row.remove("latitude").toFloat());
+            } catch (NullPointerException e) {
+            }
+
+            // "Family" is not a standard CLDF term.
+            try {
+                languageEntry.setFamily(row.remove("family").toString());
+            } catch (NullPointerException e) {
+            }
+            if (languageEntry.getFamily() == null && languageEntry.getGlottocode() != null) {
+                languageEntry.setFamily(familyFromGlottocode(languageEntry.getGlottocode()));
+            }
+
+            // for the remaining columns, put them into a property map
+            languageEntry.setProperties(row);
+            // mapping object and its id
+            languageTable.put(languageEntry.getLangID(), languageEntry);
         }
-        cognateIdMap.clear();
+        return languageTable;
+    }
+
+    /**
+     * A method for reading the Parameter Table (containing concepts)
+     *
+     * @param stream          of the file to read
+     * @param propertyColumns a map of properties and their columns
+     * @return id to concept object map
+     * @throws IOException
+     */
+    public static Map<String, CLDFParameter> readParameterCsv(InputStream stream, JsonNode table) throws IOException {
+        Map<String, CLDFParameter> parameterTable = new HashMap<>();
+        for (Map<String, PString> row : readTable(stream, table)) {
+
+            CLDFParameter parameterEntry = new CLDFParameter(row.remove("id").toString());
+
+            // settings fields that aren't required by checking whether they exist
+            try {
+                parameterEntry.setName(row.remove("name").toString());
+            } catch (NullPointerException e) {
+            }
+            try {
+                parameterEntry.setConcepticonID(row.remove("concepticonReference").toString());
+            } catch (NullPointerException e) {
+            }
+            // "Concepticon Gloss" is not a standard CLDF term.
+            try {
+                parameterEntry.setConcepticon(row.remove("name").toString());
+                // TODO: if "Concepticon Gloss" does not exist, try to derive from Concepticon
+                // ID.
+            } catch (NullPointerException e) {
+            }
+
+            try {
+                // "Semantic Field" is not a standard CLDF term.
+                parameterEntry.setSemanticField(row.remove("name").toString());
+            } catch (NullPointerException e) {
+            }
+
+            // for the remaining columns, put them into a property map
+            parameterEntry.setProperties(row);
+            // mapping object and its id
+            parameterTable.put(parameterEntry.getParamID(), parameterEntry);
+        }
+        return parameterTable;
+    }
+
+    /**
+     * A method for reading the CognateTable (containing judgements)
+     *
+     * @param stream          of the file to read
+     * @param propertyColumns a map of properties and their columns
+     * @return id to judgement object map
+     * @throws IOException
+     */
+    public static Map<String, CLDFCognateJudgement<String, String, String>> readCognateCsv(InputStream stream,
+            JsonNode table) throws IOException {
+        Map<String, CLDFCognateJudgement<String, String, String>> cognateTable = new HashMap<>();
+        for (Map<String, PString> row : readTable(stream, table)) {
+
+            CLDFCognateJudgement<String, String, String> judgement = new CLDFCognateJudgement<String, String, String>(
+                    row.remove("id").toString(), row.remove("formReference").toString(),
+                    row.remove("cognatesetReference").toString());
+
+            // for the remaining columns, put them into a property map
+            judgement.setProperties(row);
+            // mapping object and its id
+            cognateTable.put(judgement.getCognateID(), judgement);
+        }
         return cognateTable;
     }
 
     /**
-     * A method for reading the CognateSet Table
+     * A method for reading the CognateTable (containing judgements)
      *
-     * @param path            of the file to read
+     * @param stream          of the file to read
      * @param propertyColumns a map of properties and their columns
-     * @return id to CognateSet object map
+     * @return id to judgement object map
+     * @throws IOException
      */
-    public static Map<String, CLDFCognateSet> readCognateSetCsv(String path, Map<String, String> propertyColumns) {
-        BufferedReader bf = null;
-        String line = "";
-        Map<String, CLDFCognateSet> cognatesetTable = new HashMap<>();
-        try {
-            bf = new BufferedReader(new FileReader(path));
-            List<String> columns = Arrays.asList(bf.readLine().split(",")); //all columns are split by comma
+    public static Map<String, CLDFCognateSet<String>> readCognatesetCsv(InputStream stream, JsonNode table)
+            throws IOException {
+        Map<String, CLDFCognateSet<String>> cogsetTable = new HashMap<>();
+        for (Map<String, PString> row : readTable(stream, table)) {
 
-            //retrieving column indecies of each property, that will help us extract values and fill Object fields. -1 needed when the field is not required, and therefore won't be extracted if not found
-            int idIdx = columns.indexOf(propertyColumns.get("id"));
-            int descriptionIdx = propertyColumns.containsKey("description") ? columns.indexOf(propertyColumns.get("description")) : -1;
-            int sourceIdx = propertyColumns.containsKey("source") ? columns.indexOf(propertyColumns.get("source")) : -1;
-
-            int i = 1;
-            while ((line = bf.readLine()) != null) {
-                //parsed column values of each row
-                String[] column = parser.getColumns(line).toArray(new String[0]);
-                CLDFCognateSet cognateSetEntry = new CLDFCognateSet();
-                //if the amount of column names and the amount of retrieved column values are not the same, there must be some error in row formatting
-                try {
-                    if (column.length != columns.size()) {
-                        throw new Exception();
-                    }
-                    //setting required fields
-                    cognateSetEntry.setCogsetID(column[idIdx]);
-
-                    //settings fields that aren't required by checking whether they exist
-                    if (descriptionIdx != -1) cognateSetEntry.setDescription(column[descriptionIdx]);
-                    if (sourceIdx != -1) cognateSetEntry.setSources(Arrays.asList(column[sourceIdx].split(";")));
-
-                    //mapping object and its id
-                    cognatesetTable.put(column[idIdx], cognateSetEntry);
-                } catch (Exception e) {
-                    exceptions.add(new String[]{"row", path, i + "", line});
-                }
-                i++;
+            CLDFCognateSet<String> cogset = new CLDFCognateSet<String>(row.remove("id").toString());
+            try {
+                cogset.setDescription(row.remove("description").toString());
+            } catch (NullPointerException n) {
             }
-            bf.close();
+            try {
+                cogset.setSources(row.remove("description").toStringList());
+            } catch (NullPointerException n) {
+            }
 
-        } catch (ArrayIndexOutOfBoundsException | IOException e) {
-            e.printStackTrace();
+            // for the remaining columns, put them into a property map
+            cogset.setProperties(row);
+            // mapping object and its id
+            cogsetTable.put(cogset.getCogsetID(), cogset);
         }
-
-        return cognatesetTable;
+        return cogsetTable;
     }
-
 }

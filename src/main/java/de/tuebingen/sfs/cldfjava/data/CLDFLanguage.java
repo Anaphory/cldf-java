@@ -3,26 +3,28 @@ package de.tuebingen.sfs.cldfjava.data;
 import java.util.HashMap;
 import java.util.Map;
 
+import de.tuebingen.sfs.cldfjava.io.PString;
+
 public class CLDFLanguage {
-    //TODO: refactor ISO
-    String langID; //the foreign key used by the rest of the database
+    // TODO: refactor ISO
+    String langID; // the foreign key used by the rest of the database
     String iso;
     String glottocode;
     String name;
     String family;
     float latitude;
     float longitude;
-    Map<String, String> properties; //to store additional info and remaining properties
+    Map<String, PString> properties; // to store additional info and remaining properties
+    private String subfamily;
 
-    public CLDFLanguage() {
-        langID = "";
+    public CLDFLanguage(String languageID) {
+        langID = languageID;
         iso = "";
         glottocode = "";
         name = "";
         latitude = Float.NaN;
         longitude = Float.NaN;
         properties = new HashMap<>();
-
     }
 
     public String getName() {
@@ -31,14 +33,6 @@ public class CLDFLanguage {
 
     public void setName(String name) {
         this.name = name;
-    }
-
-    public Map<String, String> getProperties() {
-        return properties;
-    }
-
-    public void setProperties(Map<String, String> properties) {
-        this.properties = properties;
     }
 
     public String getLangID() {
@@ -73,6 +67,14 @@ public class CLDFLanguage {
         this.family = family;
     }
 
+    public String getSubFamily() {
+        return subfamily;
+    }
+
+    public void setSubFamily(String subfamily) {
+        this.subfamily = subfamily;
+    }
+
     public float getLatitude() {
         return latitude;
     }
@@ -89,9 +91,18 @@ public class CLDFLanguage {
         this.longitude = longitude;
     }
 
+    public Map<String, PString> getProperties() {
+        return properties;
+    }
+
+    public void setProperties(Map<String, PString> properties) {
+        this.properties = properties;
+    }
+
     public String toString() {
         return langID + "\t" + name + "\t" + iso + "\t" + glottocode + "\t" + family + "\t" + properties;
     }
 
-    //TODO: write appropriate constructor, getters, treatment of gaps (default values)
+    // TODO: write appropriate constructor, getters, treatment of gaps (default
+    // values)
 }

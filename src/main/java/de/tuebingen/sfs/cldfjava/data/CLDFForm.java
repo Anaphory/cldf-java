@@ -1,28 +1,34 @@
 package de.tuebingen.sfs.cldfjava.data;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
-public class CLDFForm {
-    int id; //the id used to reference forms in other tables (e.g. cognates.csv or borrowings.csv)
-    String langID; //Language_ID
-    String paramID; //Parameter_ID
+import de.tuebingen.sfs.cldfjava.io.CLDFImport;
+import de.tuebingen.sfs.cldfjava.io.PString;
+
+public class CLDFForm<FormID> {
+    FormID id; // the id used to reference forms in other tables (e.g. cognates.csv or
+               // borrowings.csv)
+    String langID; // Language_ID
+    List<String> paramID; // Parameter_ID
     String form;
-    String origValue; //Value
+    String origValue; // Value
     String comment;
 
     String orthography;
-    Map<String, String> properties; //to store additional info, e.g. the original orthography, under their column name
+    Map<String, PString> properties; // to store additional info, e.g. the original orthography, under their column
+                                     // name
     String[] segments;
 
-    public CLDFForm() {
-        id = -1;
-        langID = "";
-        paramID = "";
-        form = "";
+    public CLDFForm(FormID id, String language, List<String> concepts, String form) {
+        this.id = id;
+        this.langID = language;
+        this.paramID = concepts;
+        this.form = form;
         origValue = "";
         comment = "";
-//		cogsetID = -1;
         properties = new HashMap<>();
         orthography = "";
     }
@@ -31,8 +37,9 @@ public class CLDFForm {
         return segments;
     }
 
-    public void setSegments(String[] segments) {
-        this.segments = segments;
+    public void setSegments(List<String> segments) {
+        this.segments = new String[segments.size()];
+        segments.toArray(this.segments);
     }
 
     public String getOrthography() {
@@ -43,20 +50,20 @@ public class CLDFForm {
         this.orthography = orthography;
     }
 
-    public Map<String, String> getProperties() {
+    public Map<String, PString> getProperties() {
         return properties;
     }
 
-    public void setProperties(Map<String, String> properties) {
-        this.properties = properties;
+    public void setProperties(Map<String, PString> row) {
+        this.properties = row;
     }
 
-    public int getId() {
+    public FormID getId() {
         return id;
     }
 
-    public void setId(int id) {
-        this.id = id;
+    public void setId(FormID string) {
+        this.id = string;
     }
 
     public String getForm() {
@@ -91,17 +98,16 @@ public class CLDFForm {
         this.langID = langID;
     }
 
-    public String getParamID() {
+    public List<String> getParamID() {
         return paramID;
     }
 
-    public void setParamID(String paramID) {
-        this.paramID = paramID;
+    public void setParamID(List<String> list) {
+        this.paramID = list;
     }
 
     public String toString() {
         return id + "\t" + form + "\t" + langID + "\t" + paramID + "\t" + properties;
     }
-
 
 }

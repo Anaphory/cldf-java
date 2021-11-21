@@ -3,16 +3,18 @@ package de.tuebingen.sfs.cldfjava.data;
 import java.util.HashMap;
 import java.util.Map;
 
+import de.tuebingen.sfs.cldfjava.io.PString;
+
 public class CLDFParameter {
     String paramID; //the foreign key used by the rest of the database
     String name;
     String concepticonID;
     String concepticon;
     String semField;
-    Map<String, String> properties; //to store additional info
+    Map<String, PString> properties; //to store additional info
 
-    public CLDFParameter() {
-        paramID = "";
+    public CLDFParameter(String concept) {
+        paramID = concept;
         name = "";
         concepticonID = "";
         concepticon = "";
@@ -36,12 +38,12 @@ public class CLDFParameter {
         this.concepticon = concepticon;
     }
 
-    public Map<String, String> getProperties() {
+    public Map<String, PString> getProperties() {
         return properties;
     }
 
-    public void setProperties(Map<String, String> properties) {
-        this.properties = properties;
+    public void setProperties(Map<String, PString> more_properties) {
+        this.properties = more_properties;
     }
 
     public String getConcepticonID() {
