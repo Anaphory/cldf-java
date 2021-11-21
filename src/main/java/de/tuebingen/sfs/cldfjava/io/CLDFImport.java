@@ -24,11 +24,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVFormat.Builder;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
 
+/**
+ * This class provides functionality to load a CLDF database into a CLDFDatabase
+ * object (see structure and interface there).
+ * 
+ * The module we want to fully support is described here:
+ * https://github.com/cldf/cldf/tree/master/modules/Wordlist Test cases are
+ * src/test/resources/lexirumah-2.0 and src/test/resources/northeuralex-0.9. We
+ * should first read the metadata JSON file, and adapt the parser for the other
+ * files to the CSV dialect description (see https://github.com/cldf/cldf)
+ */
 public class CLDFImport {
 
+    /**
+     * A CellReader is an interface for getting a PString (a cell value annotated
+     * with the column's data type) from a row. The interface permits virtual
+     * columns (by making `translate` a constant function) as well as other
+     * conversions.
+     *
+     */
     interface CellReader {
         abstract PString translate(CSVRecord r);
     }
@@ -38,20 +56,16 @@ public class CLDFImport {
     static List<String[]> exceptions;
 
     /**
-     * TODO: This should build a CLDFDatabase object (see structure and interface
-     * there) from a directory with CLDF files. The module we want to fully support
-     * is described here: https://github.com/cldf/cldf/tree/master/modules/Wordlist
-     * Test cases are src/test/resources/lexirumah-2.0 and
-     * src/test/resources/northeuralex-0.9. We should first read the metadata JSON
-     * file, and adapt the parser for the other files to the CSV dialect description
-     * (see https://github.com/cldf/cldf) The functionality of importAtomsFromFile
-     * (and retrieveAtoms) should then be moved to LexicalAtomExtractor (see there)
-     *
-     * @param cldfDirName
-     * @return
+     * Load a word list from a folder, by taking the first JSON metadata file.
+     * 
+     * @deprecated Explicitly load a sepecific metadata file instead.
+     * 
+     * @param cldfDirName a directory containing a CLDF wordlist metadata JSON file
+     * @return CLDFWordlistDatabase
      * @throws CLDFParseError
      * @throws IOException
      */
+    @Deprecated
     public static CLDFWordlistDatabase<String, String, String> loadDatabase(String cldfDirName)
             throws IOException, CLDFParseError {
         File path = new File(cldfDirName);
@@ -69,8 +83,17 @@ public class CLDFImport {
         return loadDatabaseMetadata(json);
     }
 
+    /**
+     * Load a word list according to a JSON metadata file.
+     * 
+     * @param json the path to a metadata JSON file
+     * @return CLDFWordlistDatabase
+     * @throws CLDFParseError
+     * @throws IOException
+     */
     public static CLDFWordlistDatabase<String, String, String> loadDatabaseMetadata(File json)
             throws IOException, CLDFParseError {
+        // TODO: Using global variables as temporary storage isn't beautiful.
         exceptions = new ArrayList<>();
         languages = new HashSet<>();
         concepts = new HashSet<>();
@@ -78,16 +101,15 @@ public class CLDFImport {
         URL context = json.toURI().toURL();
         byte[] mapData = Files.readAllBytes(Paths.get(json.getAbsolutePath()));
         JsonNode root = new ObjectMapper().readTree(mapData);
-        String moduleType = root.get("dc:conformsTo").asText().split("#")[1]; // extracting the module from the link
+        String moduleType = root.get("dc:conformsTo").asText().split("#")[1];
 
         if (!moduleType.equals("Wordlist")) {
             throw new CLDFParseError("Expected Wordlist, found " + root.get("dc:conformsTo").asText());
         }
 
-        // extracting the Wordlist module
-        JsonNode tables = root.get("tables"); // extracting all tables of the module
+        // Extract the Wordlist module: Inspect all tables of the module.
+        JsonNode tables = root.get("tables");
         Map<String, JsonNode> tableTypes = new HashMap<>();
-
         for (JsonNode table : tables) {
             String tableType;
             if (table.get("dc:conformsTo") == null)
@@ -103,9 +125,7 @@ public class CLDFImport {
             }
             tableTypes.put(tableType, table);
         }
-
-        // index of a type of table in the list is the one we that we will refer to
-        // retrieve all values we understand for the tables we care about
+        // Retrieve all values we understand from the tables we care about
 
         // FormTable
         Map<String, CLDFForm<String>> idToForm;
@@ -143,7 +163,7 @@ public class CLDFImport {
             InputStream table = url.openConnection().getInputStream();
             paramIDToParam = readParameterCsv(table, parameterTable);
         } else {
-            // TODO: Sigh, all we know about concepts are the entries in the FormTable's
+            // Sigh, all we know about concepts are the entries in the FormTable's
             // parameterReference. Turn those into minimal CLDFParameter objects.
             // OR INSTEAD, throw an error and tell the user to create a ParameterTable with
             // lexedata, which can also guess some Concepticon connections.
@@ -160,11 +180,11 @@ public class CLDFImport {
             InputStream table = url.openConnection().getInputStream();
             cognateIDToCognate = readCognateCsv(table, cognateTable);
         } else {
-            // populating the judgements map only happens if there is a separate file for
+            // Populating the judgements map only happens if there is a separate file for
             // that.
             // If there isn't one, do nothing. In particular, do not fall back to reading
-            // cognate judgements from the FormTable, like it was common in the early days
-            // of CLDF.
+            // cognate judgements from the FormTable's cognatesetReference, like it was
+            // common in the early days of CLDF.
         }
 
         // CognatesetTable
@@ -175,7 +195,8 @@ public class CLDFImport {
             InputStream table = url.openConnection().getInputStream();
             cogSetIDToCogset = readCognatesetCsv(table, cognateSetTable);
         } else {
-            // populating Cognateset map only happens if there is a separate file for that.
+            // Populating the Cognateset map only happens if there is a separate file for
+            // that.
             // This is probably the table we need the least.
         }
 
@@ -193,14 +214,24 @@ public class CLDFImport {
         return database;
     }
 
+    /**
+     * Load a single CLDF table into memory as List.
+     * 
+     * @param stream the stream to read the table from, eg. from opening a file
+     * @param table  the CLDF table description in JSON
+     * @return tableContent a list of table rows, each mapping properties (falling
+     *         back to column names) to PString.
+     * @throws IOException
+     */
     public static List<Map<String, PString>> readTable(InputStream stream, JsonNode table) throws IOException {
-        CSVFormat dialect = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build();
+        Builder dialect = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true);
         if (table.get("dialect") != null) {
             // TODO: understand the table dialect, and adjust the format description
             // accordingly
         }
-        CSVParser parser = CSVParser.parse(stream, StandardCharsets.UTF_8, dialect);
+        CSVParser parser = CSVParser.parse(stream, StandardCharsets.UTF_8, dialect.build());
 
+        // Understand the table schema
         List<String> column_headers = parser.getHeaderNames();
         Iterator<JsonNode> column_spec = table.get("tableSchema").get("columns").elements();
         Map<String, CellReader> functions = new HashMap<>();
@@ -208,25 +239,38 @@ public class CLDFImport {
             JsonNode column = column_spec.next();
             String name = column.get("name").asText();
             Integer position = column_headers.indexOf(name);
-            String function = null;
+            String property = null;
             try {
-                function = column.get("propertyUrl").asText();
-                function = function.split("#")[1];
+                property = column.get("propertyUrl").asText();
+                property = property.split("#")[1];
             } catch (IndexOutOfBoundsException e) {
                 // The second line got skipped. This is okay.
             } catch (NullPointerException e) {
-                function = name;
+                property = name;
             }
-            // TODO: If there's a valueUrl, it should be used as template.
-            // TODO: We could have a virtual column, which would ask for a constant fn.
+
+            // Parse the data type, and set a value mapper accordingly.
             JsonNode separator = column.get("separator");
-            if (separator == null) {
-                functions.put(function, r -> new PString(r.get(position), null));
+            String datatype;
+            try {
+                datatype = column.get("datatype").asText();
+            } catch (NullPointerException e) {
+                datatype = "string";
+            }
+            // TODO: If there's a valueUrl, it should be used as string template.
+            // TODO: We could have a virtual column, which would ask for a constant
+            // CellReader.
+            // TODO: Do we need to support integers?
+            if (datatype == "double") {
+                functions.put(property, r -> new PString(r.get(position), false));
+            } else if (separator == null) {
+                functions.put(property, r -> new PString(r.get(position), null));
             } else {
-                functions.put(function, r -> new PString(r.get(position), separator.asText()));
+                functions.put(property, r -> new PString(r.get(position), separator.asText()));
             }
         }
 
+        // Read the individual rows, and map them.
         List<Map<String, PString>> rows = new ArrayList<>();
         for (CSVRecord row : parser) {
             Map<String, PString> processed_row = new HashMap<>();
@@ -239,12 +283,12 @@ public class CLDFImport {
     }
 
     /**
-     * A method for reading the Form Table
-     *
-     * @param path  of the file to read
-     * @param table The JSON entry describing the table (has key "tableSchema", and
-     *              maybe others.)
-     * @return id to Form object map
+     * Load a FormTable into CLDFForm objects.
+     * 
+     * @param stream
+     * @param table  The JSON entry describing the table (has key "tableSchema", and
+     *               maybe others.)
+     * @return a mapping of Form IDs (assumed to be strings) to CLDFForms
      * @throws IOException
      */
     public static Map<String, CLDFForm<String>> readFormCsv(InputStream stream, JsonNode table) throws IOException {
@@ -292,11 +336,12 @@ public class CLDFImport {
     }
 
     /**
-     * A method for reading the Language Table
-     *
-     * @param stream          of the file to read
-     * @param propertyColumns a map of properties and their columns
-     * @return id to Language object map
+     * Load a LanguageTable into CLDFLanguage objects.
+     * 
+     * @param stream
+     * @param table  The JSON entry describing the table (has key "tableSchema", and
+     *               maybe others.)
+     * @return a mapping of Language IDs (assumed to be strings) to CLDFLanguages
      * @throws IOException
      */
     public static Map<String, CLDFLanguage> readLanguageCsv(InputStream stream, JsonNode table) throws IOException {
@@ -320,11 +365,11 @@ public class CLDFImport {
             } catch (NullPointerException e) {
             }
             try {
-                languageEntry.setLongitude(row.remove("longitude").toFloat());
+                languageEntry.setLongitude((float) row.remove("longitude").toDouble());
             } catch (NullPointerException e) {
             }
             try {
-                languageEntry.setLatitude(row.remove("latitude").toFloat());
+                languageEntry.setLatitude((float) row.remove("latitude").toDouble());
             } catch (NullPointerException e) {
             }
 
@@ -346,11 +391,13 @@ public class CLDFImport {
     }
 
     /**
-     * A method for reading the Parameter Table (containing concepts)
-     *
-     * @param stream          of the file to read
-     * @param propertyColumns a map of properties and their columns
-     * @return id to concept object map
+     * Load a ParameterTable into CLDFParameter objects, which describe concepts.
+     * 
+     * @param stream
+     * @param table  The JSON entry describing the table (has key "tableSchema", and
+     *               maybe others.)
+     * @return a mapping of Parameter IDs (assumed to be strings) to CLDFParameter
+     *         objects
      * @throws IOException
      */
     public static Map<String, CLDFParameter> readParameterCsv(InputStream stream, JsonNode table) throws IOException {
@@ -391,11 +438,13 @@ public class CLDFImport {
     }
 
     /**
-     * A method for reading the CognateTable (containing judgements)
-     *
-     * @param stream          of the file to read
-     * @param propertyColumns a map of properties and their columns
-     * @return id to judgement object map
+     * Load a CognateTable into CLDFCognateJudgement objects.
+     * 
+     * @param stream
+     * @param table  The JSON entry describing the table (has key "tableSchema", and
+     *               maybe others.)
+     * @return A mapping of Cognate IDs (assumed to be strings) to
+     *         CLDFCognateJudgement objects
      * @throws IOException
      */
     public static Map<String, CLDFCognateJudgement<String, String, String>> readCognateCsv(InputStream stream,
@@ -416,11 +465,13 @@ public class CLDFImport {
     }
 
     /**
-     * A method for reading the CognateTable (containing judgements)
-     *
-     * @param stream          of the file to read
-     * @param propertyColumns a map of properties and their columns
-     * @return id to judgement object map
+     * Load a CognatesetTable into CLDFCognateSet objects.
+     * 
+     * @param stream
+     * @param table  The JSON entry describing the table (has key "tableSchema", and
+     *               maybe others.)
+     * @return A mapping of Cognateset IDs (assumed to be strings) to
+     *         CLDFCognateSet objects
      * @throws IOException
      */
     public static Map<String, CLDFCognateSet<String>> readCognatesetCsv(InputStream stream, JsonNode table)
